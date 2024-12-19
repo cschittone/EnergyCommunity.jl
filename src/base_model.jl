@@ -8,7 +8,7 @@ Creates the base optimization model for all the EC models
 
 # Arguments
 '''
-data: structure of data
+data: structure of data Tesi 
 '''
 """
 
