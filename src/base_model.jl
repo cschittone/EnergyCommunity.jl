@@ -1,3 +1,177 @@
+   ## VARIABLES 
+
+    # Energy supplied by the thermal storage for demand coverage
+    @variable(model_user, 
+        0 <= E_tes_out[u in user_set, s in asset_names(users_data[u], TES), t in time_set])
+
+    # Energy input to the thermal storage, from hp and boiler
+    @variable(model_user, 
+        0 <= E_tes_in[u in user_set, s in asset_names(users_data[u], TES), t in time_set])
+
+    # Split variable: Energy of the heat pump for demand coverage
+    @variable(model_user, 
+        0 <= E_hp_to_demand[u in user_set, h in asset_names(users_data[u], HP), t in time_set])
+
+    # Split variable: Energy of the heat pump for storage
+    @variable(model_user, 
+        0 <= E_hp_to_tes[u in user_set, h in asset_names(users_data[u], HP), t in time_set])
+
+    # Split variable: Energy of the boiler for demand coverage
+    @variable(model_user, 
+        0 <= E_boil_to_demand[u in user_set, o in asset_names(users_data[u], BOIL), t in time_set])
+
+    # Split variable. Energy of the boiler for storage
+    @variable(model_user, 
+        0 <= E_boil_to_tes[u in user_set, o in asset_names(users_data[u], BOIL), t in time_set])
+    
+    # Binary variable: Heat pump active: 1 if the heat pump is active, otherwise 0
+    @variable(model_user, 
+    b_hp_active[u, t], Bin)
+
+    # Binary variable. Boiler active: 1 if the boil is active, otherwise 0
+    @variable(model_user, 
+    b_boil_active[u, t], Bin)
+       
+    # Ren Energy to heat pump
+    @variable(model_user, 
+    0 <= E_ren_to_hp[u in user_set, t in time_set])
+
+    # Energy from the grid to the heat pump
+    @variable(model_user, 
+    0 <= E_grid_to_hp[u in user_set, t in time_set])
+
+    # Energy from the grid
+    @variable(model_user, 
+    0 <= E_grid[u in user_set, t in time_set])
+
+    ## Expressions
+
+    # Thermal energy production by the heat pump for each user and asset
+    @expression(model_user, E_hp_T_us[u in user_set, h in asset_names(users_data[u], HP), t in time_set],
+        profile(ECModel.gen_data, "time_res")[t] * P_hp_T[u, h, t]
+    )
+
+    # Total thermal energy production by the heat pump for each user
+    @expression(model_user, E_hp_T_tot[u in user_set, t in time_set],
+        sum(E_hp_T_us[u, h, t] for h in asset_names(users_data[u], HP))
+    )
+
+    # Electric energy consumption by the heat pump for each user and asset
+    @expression(model_user, E_hp_el[u in user_set, t in time_set],
+        sum(P_hp_el[u, h, t] * profile(ECModel.gen_data, "time_res")[t] for h in asset_names(users_data[u], HP))
+    )
+
+    # Total energy consumption by the boiler for each user
+    @expression(model_user, E_boil_tot[u in user_set, t in time_set],
+        sum(E_boil_us[u, o, t] for o in asset_names(users_data[u], BOIL))
+    )
+
+    # Thermal energy from boiler, heat pump and storage for each user
+    @expression(model_user, E_thermal_served[u in user_set, t in time_set],
+        sum(E_hp_to_demand[u, h, t] for h in asset_names(users_data[u], HP)) 
+        + sum(E_boil_to_demand[u, o, t] for o in asset_names(users_data[u], BOIL)) 
+        + sum(E_tes_out[u, s, t] for s in asset_names(users_data[u], TES))
+    )
+
+    # Big-M logic
+    # Defines the maximum energy that can be transferred to the TES in one timestep
+    # Used to disable energy input when the device is inactive (e.g., b_hp_active = 0)
+    @expression(model_user, M[u, a, t], 
+        field_component(users_data[u], a, "max_capacity") * profile(ECModel.gen_data, "time_res")[t]
+    )
+
+    # Contribute to the total cost of the user by the boiler production
+    @expression(model_user, C_share_boil[u in user_set],
+        sum(C_boil_us[u,o,t] for o in asset_names(users_data[u], BOIL), t in time_set) / C_t_load_tot_us[u]
+    )
+
+    # Contribute to the total cost of the user by the heat pump production
+    @expression(model_user, C_share_hp[u in user_set],
+        sum(C_hp_us[u,h,t] for h in asset_names(users_data[u], HP), t in time_set) / C_t_load_tot_us[u]
+    )
+
+    ## CONSTRAINTS
+
+    # Set the binary variables to 1 if one of the assets is active (alternative logic)
+    # This is done to avoid having both the heat pump and the boiler active at the same time
+    @constraint(model_user, con_bin_alternative_activation[u in user_set, t in time_set],
+        b_hp_active[u, t] + b_boil_active[u, t] <= 1
+    )
+
+    # Set the energy sent from heat pump to TES based on device activation (Big-M logic)
+    @constraint(model_user, con_us_E_hp_to_tes[u in user_set, h in asset_names(users_data[u], HP), t in time_set],
+        E_hp_to_tes[u, h, t] <= b_hp_active[u, t] * M[u, a, t]
+    )
+
+    # Set the energy sent from boiler to TES based on device activation (Big-M logic)
+    @constraint(model_user, con_us_E_boil_to_tes[u in user_set, o in asset_names(users_data[u], BOIL), t in time_set],
+        E_boil_to_tes[u, o, t] <= b_boil_active[u, t] * M[u, a, t]
+    )
+
+    # Limit the thermal power output from heat pump based on binary activation
+    @constraint(model_user, con_us_hp_bin[u in user_set, h in asset_names(users_data[u], HP), t in time_set],
+        P_hp_T[u, h, t] <= b_hp_active[u, t] * field_component(users_data[u], h, "max_capacity")
+    )
+
+    # Limit thermal power output from boiler based on binary activation
+    @constraint(model_user, con_us_boil_bin[u in user_set, o in asset_names(users_data[u], BOIL), t in time_set],
+        P_boil_us[u, o, t] <= b_boil_active[u, t] * field_component(users_data[u], o, "max_capacity")
+    )
+
+    # Split total thermal energy from heat pump into demand and TES contributions
+    @constraint(model_user, con_us_hp_out[u in user_set, h in asset_names(users_data[u], HP), t in time_set],
+        E_hp_T_us[u, h, t] == E_hp_to_demand[u, h, t] + E_hp_to_tes[u, h, t]
+    )
+
+    # Split total thermal energy from boiler into demand and TES contributions
+    @constraint(model_user, _con_us_boil_out[u in user_set, o in asset_names(users_data[u], BOIL), t in time_set],
+        E_boil_us[u, o, t] == E_boil_to_demand[u, o, t] + E_boil_to_tes[u, o, t]
+    )
+
+    # Ensure thermal demand is at least partially covered
+    @constraint(model_user, con_us_t_load_served[u in user_set, t in time_set],
+        E_thermal_served[u, t] >= profile_component(users_data[u], l, "t_load")[t] * profile(gen_data, "time_res")[t]
+    )
+
+#TODO
+#questo vincolo è da rivedere
+    @constraint(model_user, [u in user_set, t in time_set],
+        E_hp_el[u, t] == profile(ECModel.gen_data, "time_res")[t] * P_ren_us[u, t] + E_grid[u, t]
+    )
+#con questo:
+    @constraint(model_user, [u in user_set, t in time_set],
+        E_ren_to_hp[u, t] + E_grid_to_hp[u, t] == E_hp_el[u, t]
+    )
+
+    # Set the renewable energy to the heat pump
+    @constraint(model_user, _con_us_ren_to_hp[u in user_set, t in time_set],
+        E_ren_to_hp[u, t] <= profile(ECModel.gen_data, "time_res")[t] * P_ren_us[u, t]
+    )
+
+    # Set the energy from the grid to the heat pump
+    @constraint(model_user, [u in user_set, t in time_set],
+        E_grid_to_hp[u, t] <= E_grid[u, t]
+    )
+
+    # Set the energy from heat pump and boiler to the storage
+    @constraint(model_user, con_us_tes_in[u in user_set, s in asset_names(users_data[u], TES), t in time_set],
+        E_tes_in[u, s, t] == sum(E_hp_to_tes[u, h, t] + E_boil_to_tes[u, o, t])
+    )
+
+    # Set the energy supplied by the storage to the demand
+    @constraint(model_user, con_us_tes_out[u in user_set, s in asset_names(users_data[u], TES), t in time_set],
+        E_tes_out[u, s, t] == E_tes_to_demand[u, s, t]
+    )
+    
+    # Set the energy balance at the storage system of each user. Note that in the case of the first time step, the last id is used
+    @constraint(model_user, con_us_tes_balance[u in user_set, s in asset_names(users_data[u], TES), t in time_set],
+        E_tes_us[u, s, t] == E_tes_us[u, s, pre(t, time_set)] + E_tes_in[u, s, t]
+        - E_tes_out[u, s, t] - Tes_heat_loss[u, s, t] * profile(gen_data, "time_res")[t]
+    )
+
+
+# todo
+
 # accepted technologies
 ACCEPTED_TECHS = ["load", "renewable", "battery", "converter", "thermal"]
 
