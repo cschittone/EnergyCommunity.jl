@@ -170,7 +170,7 @@
     )
 
 
-# todo
+# 
 
 # accepted technologies
 ACCEPTED_TECHS = ["load", "renewable", "battery", "converter", "thermal"]
